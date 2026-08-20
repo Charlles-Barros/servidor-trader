@@ -36,8 +36,8 @@ MODELOS_DISPONIVEIS = [
     "gemini-3.5-flash",
     "gemini-flash-latest"
 ]
-# =========================================================
 
+# =========================================================
 key_index = 0
 
 def get_client():
@@ -78,14 +78,12 @@ def login(dados: LoginRequest):
     vencimento = datetime.fromisoformat(user["vencimento_licenca"].replace("Z", "+00:00"))
     agora = datetime.now(timezone.utc)
     dias_restantes = (vencimento - agora).days
-
     if agora > vencimento:
         return {
             "autenticado": False,
             "mensagem": "Licença expirada.",
             "dias_restantes": 0
         }
-
     return {
         "autenticado": True,
         "mensagem": "Login realizado com sucesso!",
@@ -103,38 +101,29 @@ async def webhook_kiwify(request: Request, token: str = None):
     order_status = payload.get("order_status")
     customer = payload.get("Customer", {})
     email = customer.get("email")
-
     if not email or order_status != "paid":
         return {"status": "ignorado", "motivo": "Pagamento não aprovado ou e-mail ausente."}
-
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase não configurado.")
-
     res = supabase.table("usuarios").select("*").eq("email", email).execute()
     agora = datetime.now(timezone.utc)
-
     if res.data:
         user = res.data[0]
         venc_atual = datetime.fromisoformat(user["vencimento_licenca"].replace("Z", "+00:00"))
         base_calculo = venc_atual if venc_atual > agora else agora
         novo_vencimento = base_calculo + timedelta(days=30)
-
         supabase.table("usuarios").update({
             "vencimento_licenca": novo_vencimento.isoformat()
         }).eq("email", email).execute()
-
         return {"status": "sucesso", "acao": "licenca_renovada", "email": email}
-
     else:
         senha_temp = gerar_senha_temporaria()
         novo_vencimento = agora + timedelta(days=30)
-
         supabase.table("usuarios").insert({
             "email": email,
             "senha_hash": senha_temp,
             "vencimento_licenca": novo_vencimento.isoformat()
         }).execute()
-
         return {
             "status": "sucesso",
             "acao": "usuario_criado",
@@ -145,12 +134,11 @@ async def webhook_kiwify(request: Request, token: str = None):
 # 3. Rota de Análise do Gráfico com Visão Computacional
 @app.post("/analisar")
 def analisar_grafico(
-    email_usuario: str = Header(...), 
+    email_usuario: str = Header(..., alias="email-usuario"), 
     file: UploadFile = File(...)
 ):
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase não configurado.")
-
     res = supabase.table("usuarios").select("vencimento_licenca").eq("email", email_usuario).execute()
     
     if not res.data:
@@ -164,22 +152,17 @@ def analisar_grafico(
             status_code=403, 
             detail="Sua licença expirou. Renove para continuar recebendo sinais."
         )
-
     dias_restantes = (vencimento - agora).days
-
     try:
         contents = file.file.read()
         img = Image.open(io.BytesIO(contents)).convert("RGB")
         img.thumbnail((800, 800))
-
         prompt = (
             "Examine o gráfico. Responda em UMA ÚNICA LINHA SEM QUEBRAS:\n"
             "Ativo: [NOME] | Tempo operação: [2M ou 5M] | Ordem: [CALL ou PUT] | Probabilidade: [XX%]"
         )
-
         response = None
         erros_detalhados = []
-
         for modelo in MODELOS_DISPONIVEIS:
             try:
                 client = get_client()
@@ -192,17 +175,14 @@ def analisar_grafico(
                     break
             except Exception as e_model:
                 erros_detalhados.append(f"{modelo}: {str(e_model)}")
-
         if not response or not response.text:
             erro_final = " | ".join(erros_detalhados) if erros_detalhados else "Nenhum modelo respondeu"
             raise HTTPException(status_code=500, detail=f"Erro na IA -> {erro_final}")
-
         resultado_texto = response.text.strip().replace("\n", " ")
         ordem = "CALL" if "CALL" in resultado_texto.upper() else ("PUT" if "PUT" in resultado_texto.upper() else "NEUTRO")
         
         match_prob = re.search(r"Probabilidade:\s*(\d+)%", resultado_texto)
         probabilidade = int(match_prob.group(1)) if match_prob else 0
-
         return {
             "status": "sucesso",
             "dias_licenca_restantes": dias_restantes,
@@ -210,6 +190,5 @@ def analisar_grafico(
             "ordem": ordem,
             "probabilidade": probabilidade
         }
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro de processamento: {str(e)}")
