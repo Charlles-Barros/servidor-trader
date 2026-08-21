@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Megalodon Admin - Gestão de Licenças</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background-color: #0b0e14; color: #ffffff; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; }
+        h1 { color: #00e5ff; margin-bottom: 20px; text-align: center; font-size: 24px; }
+        .card { background-color: #131722; border-radius: 8px; padding: 20px; margin-bottom: 20px; border: 1px solid #1e2640; }
+        .card h2 { color: #00ff88; font-size: 16px; margin-bottom: 15px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-size: 13px; color: #a0aec0; }
+        input { width: 100%; padding: 10px; background: #1a202c; border: 1px solid #2d3748; color: #fff; border-radius: 5px; font-size: 14px; }
+        .btn { padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 13px; transition: 0.2s; }
+        .btn-add { background-color: #10b981; color: white; width: 100%; margin-top: 10px; }
+        .btn-add:hover { background-color: #059669; }
+        .btn-renew { background-color: #00e5ff; color: #000; margin-right: 5px; }
+        .btn-block { background-color: #ef4444; color: white; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #1e2640; font-size: 13px; }
+        th { color: #a0aec0; background-color: #1a202c; }
+        .status-active { color: #00ff88; font-weight: bold; }
+        .status-expired { color: #ef4444; font-weight: bold; }
+        .grid-inputs { display: grid; grid-template-columns: 2fr 2fr 1fr; gap: 10px; }
+        @media (max-width: 600px) { .grid-inputs { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🦈 MEGALODON - PAINEL ADMIN</h1>
+
+        <div class="card">
+            <h2>Cadastrar / Atualizar Usuário</h2>
+            <div class="grid-inputs">
+                <div class="form-group">
+                    <label>E-mail do Trader:</label>
+                    <input type="email" id="email" placeholder="usuario@email.com">
+                </div>
+                <div class="form-group">
+                    <label>Senha:</label>
+                    <input type="text" id="senha" placeholder="Senha do cliente">
+                </div>
+                <div class="form-group">
+                    <label>Dias de Acesso:</label>
+                    <input type="number" id="dias" value="30">
+                </div>
+            </div>
+            <button class="btn btn-add" id="btnSalvar" onclick="salvarUsuario()">SALVAR / RENOVAR LICENÇA</button>
+        </div>
+
+        <div class="card">
+            <h2>Lista de Clientes</h2>
+            <div class="form-group">
+                <input type="text" id="busca" placeholder="Buscar por e-mail..." onkeyup="filtrar()">
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>E-mail</th>
+                        <th>Vencimento</th>
+                        <th>Status</th>
+                        <th>Ações</th>
+                    </tr>
+                </thead>
+                <tbody id="tabela-usuarios">
+                    <!-- Preenchido via API -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = "https://megalodon-server.onrender.com";
+        let todosUsuarios = [];
+
+        async function carregarUsuarios() {
+            try {
+                const res = await fetch(`${API_URL}/admin/usuarios`);
+                if (!res.ok) throw new Error("Falha na resposta do servidor");
+                todosUsuarios = await res.json();
+                renderizarTabela(todosUsuarios);
+            } catch (err) {
+                console.error("Erro ao carregar usuários:", err);
+            }
+        }
+
+        function renderizarTabela(lista) {
+            const tbody = document.getElementById('tabela-usuarios');
+            tbody.innerHTML = '';
+            const agora = new Date();
+
+            lista.forEach(user => {
+                const vencimento = user.vencimento_licenca ? new Date(user.vencimento_licenca) : null;
+                const ativo = vencimento && vencimento > agora;
+
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><b>${user.email}</b></td>
+                    <td>${vencimento ? vencimento.toLocaleDateString('pt-BR') : 'Sem licença'}</td>
+                    <td class="${ativo ? 'status-active' : 'status-expired'}">${ativo ? 'Ativo' : 'Expirado'}</td>
+                    <td>
+                        <button class="btn btn-renew" onclick="renovar('${user.email}', '${user.senha_hash}')">+30 Dias</button>
+                        <button class="btn btn-block" onclick="bloquear('${user.email}', '${user.senha_hash}')">Bloquear</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        async function salvarUsuarioExplicito(email, senha, dias) {
+            const btn = document.getElementById('btnSalvar');
+            if (btn) btn.disabled = true;
+
+            try {
+                const res = await fetch(`${API_URL}/admin/salvar-usuario`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, senha, dias })
+                });
+
+                if (res.ok) {
+                    alert("Licença salva com sucesso!");
+                    document.getElementById('email').value = '';
+                    document.getElementById('senha').value = '';
+                    carregarUsuarios();
+                } else {
+                    alert("Erro ao salvar usuário no servidor.");
+                }
+            } catch (err) {
+                alert("Erro de conexão ao salvar.");
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        function salvarUsuario() {
+            const email = document.getElementById('email').value.trim();
+            const senha = document.getElementById('senha').value.trim();
+            const dias = parseInt(document.getElementById('dias').value);
+
+            if (!email || !senha) {
+                alert("Preencha o e-mail e a senha.");
+                return;
+            }
+
+            salvarUsuarioExplicito(email, senha, dias);
+        }
+
+        function renovar(email, senha) {
+            salvarUsuarioExplicito(email, senha, 30);
+        }
+
+        function bloquear(email, senha) {
+            if (confirm(`Bloquear o usuário ${email}?`)) {
+                salvarUsuarioExplicito(email, senha, 0);
+            }
+        }
+
+        function filtrar() {
+            const termo = document.getElementById('busca').value.toLowerCase();
+            const filtrados = todosUsuarios.filter(u => u.email.toLowerCase().includes(termo));
+            renderizarTabela(filtrados);
+        }
+
+        carregarUsuarios();
+    </script>
+</body>
+</html>
