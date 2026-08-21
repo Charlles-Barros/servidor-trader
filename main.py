@@ -14,15 +14,19 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Configuração Gemini API (suporta chave única ou múltiplas separadas por vírgula)
+# Configuração Gemini API
 GEMINI_KEYS_ENV = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY") or ""
 GEMINI_KEYS = [k.strip() for k in GEMINI_KEYS_ENV.split(",") if k.strip()]
 
-# Modelos Gemini para fallback
+# Lista de modelos exata que já funcionava no seu projeto
 MODELOS_GEMINI = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash"
+    "gemini-3.7-flash",
+    "gemini-flash-latest",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.1-pro-preview",
+    "gemini-pro-latest"
 ]
 
 PROMPT_ANALISE = (
@@ -46,7 +50,6 @@ def home():
 @app.post("/login")
 async def login(dados: LoginData):
     try:
-        # Busca o usuário pelo e-mail
         res = supabase.table("usuarios").select("*").eq("email", dados.email.strip()).execute()
         
         if not res.data:
@@ -54,11 +57,9 @@ async def login(dados: LoginData):
         
         usuario = res.data[0]
         
-        # Compara a senha informada com a coluna 'senha_hash'
         if usuario.get("senha_hash") != dados.senha.strip():
             return {"autenticado": False, "mensagem": "E-mail ou senha incorretos."}
         
-        # Validação da licença / vencimento
         vencimento_str = usuario.get("vencimento_licenca")
         if vencimento_str:
             vencimento = datetime.fromisoformat(vencimento_str.replace("Z", "+00:00"))
@@ -80,12 +81,12 @@ async def login(dados: LoginData):
 @app.post("/analisar")
 async def analisar(file: UploadFile = File(...)):
     if not GEMINI_KEYS:
+        print("ERRO: Nenhuma chave GEMINI_API_KEY configurada.")
         raise HTTPException(status_code=500, detail="Nenhuma API Key do Gemini configurada.")
 
     contents = await file.read()
     image = Image.open(io.BytesIO(contents))
 
-    # Tenta processar alternando entre as chaves e modelos
     for api_key in GEMINI_KEYS:
         client_gemini = genai.Client(api_key=api_key)
         for modelo in MODELOS_GEMINI:
@@ -97,7 +98,7 @@ async def analisar(file: UploadFile = File(...)):
                 if response.text:
                     return {"analise": response.text.strip()}
             except Exception as e:
-                print(f"Falha com o modelo {modelo} na chave atual: {e}")
+                print(f"Falha no modelo '{modelo}': {e}")
                 continue
 
     raise HTTPException(status_code=500, detail="Falha no processamento da imagem por todas as chaves Gemini.")
