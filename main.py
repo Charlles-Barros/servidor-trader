@@ -1,5 +1,6 @@
 import io
 import os
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from PIL import Image
@@ -13,16 +14,15 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Configuração Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+# Configuração Gemini API (suporta chave única ou múltiplas separadas por vírgula)
+GEMINI_KEYS_ENV = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY") or ""
+GEMINI_KEYS = [k.strip() for k in GEMINI_KEYS_ENV.split(",") if k.strip()]
 
-# Lista com os modelos Gemini mais recentes e rápidos
+# Modelos Gemini para fallback
 MODELOS_GEMINI = [
     "gemini-2.5-flash",
     "gemini-2.0-flash",
-    "gemini-3.5-flash",
-    "gemini-flash-latest"
+    "gemini-1.5-flash"
 ]
 
 PROMPT_ANALISE = (
@@ -44,48 +44,60 @@ def home():
     return {"status": "Servidor Megalodon Online"}
 
 @app.post("/login")
-def login(data: LoginData):
+async def login(dados: LoginData):
     try:
-        res = supabase.table("usuarios").select("*").eq("email", data.email).execute()
-        if not res.data:
-            raise HTTPException(status_code=401, detail="Usuário não encontrado.")
+        # Busca o usuário pelo e-mail
+        res = supabase.table("usuarios").select("*").eq("email", dados.email.strip()).execute()
         
-        user = res.data[0]
-        if user.get("senha") != data.senha:
-            raise HTTPException(status_code=401, detail="Senha incorreta.")
+        if not res.data:
+            return {"autenticado": False, "mensagem": "E-mail ou senha incorretos."}
+        
+        usuario = res.data[0]
+        
+        # Compara a senha informada com a coluna 'senha_hash'
+        if usuario.get("senha_hash") != dados.senha.strip():
+            return {"autenticado": False, "mensagem": "E-mail ou senha incorretos."}
+        
+        # Validação da licença / vencimento
+        vencimento_str = usuario.get("vencimento_licenca")
+        if vencimento_str:
+            vencimento = datetime.fromisoformat(vencimento_str.replace("Z", "+00:00"))
+            agora = datetime.now(timezone.utc)
             
-        return {
-            "autenticado": True,
-            "dias_restantes": user.get("dias_restantes", 30),
-            "mensagem": "Login efetuado com sucesso."
-        }
+            if agora > vencimento:
+                return {"autenticado": False, "mensagem": "Sua licença expirou!"}
+            
+            dias_restantes = (vencimento - agora).days
+        else:
+            dias_restantes = 0
+
+        return {"autenticado": True, "dias_restantes": dias_restantes}
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Erro no login: {e}")
+        return {"autenticado": False, "mensagem": "Erro interno no servidor."}
 
 @app.post("/analisar")
 async def analisar(file: UploadFile = File(...)):
-    if not client_gemini:
-        raise HTTPException(status_code=500, detail="Chave GEMINI_API_KEY não configurada no servidor.")
-        
-    try:
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents))
-        
-        response = None
+    if not GEMINI_KEYS:
+        raise HTTPException(status_code=500, detail="Nenhuma API Key do Gemini configurada.")
+
+    contents = await file.read()
+    image = Image.open(io.BytesIO(contents))
+
+    # Tenta processar alternando entre as chaves e modelos
+    for api_key in GEMINI_KEYS:
+        client_gemini = genai.Client(api_key=api_key)
         for modelo in MODELOS_GEMINI:
             try:
                 response = client_gemini.models.generate_content(
                     model=modelo,
                     contents=[PROMPT_ANALISE, image]
                 )
-                if response and response.text:
-                    break
-            except Exception:
+                if response.text:
+                    return {"analise": response.text.strip()}
+            except Exception as e:
+                print(f"Falha com o modelo {modelo} na chave atual: {e}")
                 continue
 
-        if not response or not response.text:
-            raise HTTPException(status_code=500, detail="Erro ao gerar análise com os modelos disponíveis.")
-
-        return {"analise": response.text.strip()}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(status_code=500, detail="Falha no processamento da imagem por todas as chaves Gemini.")
