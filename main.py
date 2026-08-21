@@ -1,13 +1,24 @@
 import io
 import os
-from datetime import datetime, timezone
+import gc
+from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PIL import Image
 from google import genai
 from supabase import create_client, Client
 
 app = FastAPI()
+
+# Permite acesso do painel web (Evita erros de CORS)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Configuração Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -42,6 +53,11 @@ PROMPT_ANALISE = (
 class LoginData(BaseModel):
     email: str
     senha: str
+
+class UsuarioAdminData(BaseModel):
+    email: str
+    senha: str
+    dias: int
 
 @app.get("/")
 def home():
@@ -87,18 +103,52 @@ async def analisar(file: UploadFile = File(...)):
     contents = await file.read()
     image = Image.open(io.BytesIO(contents))
 
-    for api_key in GEMINI_KEYS:
-        client_gemini = genai.Client(api_key=api_key)
-        for modelo in MODELOS_GEMINI:
-            try:
-                response = client_gemini.models.generate_content(
-                    model=modelo,
-                    contents=[PROMPT_ANALISE, image]
-                )
-                if response.text:
-                    return {"analise": response.text.strip()}
-            except Exception as e:
-                print(f"Falha no modelo '{modelo}': {e}")
-                continue
+    try:
+        for api_key in GEMINI_KEYS:
+            client_gemini = genai.Client(api_key=api_key)
+            for modelo in MODELOS_GEMINI:
+                try:
+                    response = client_gemini.models.generate_content(
+                        model=modelo,
+                        contents=[PROMPT_ANALISE, image]
+                    )
+                    if response.text:
+                        return {"analise": response.text.strip()}
+                except Exception as e:
+                    print(f"Falha no modelo '{modelo}': {e}")
+                    continue
+    finally:
+        # Liberação preventiva de RAM para evitar erro 137
+        image.close()
+        del contents
+        gc.collect()
 
     raise HTTPException(status_code=500, detail="Falha no processamento da imagem por todas as chaves Gemini.")
+
+# --- ROTAS DO PAINEL ADMINISTRATIVO ---
+
+@app.get("/admin/usuarios")
+async def listar_usuarios():
+    try:
+        res = supabase.table("usuarios").select("*").execute()
+        return res.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/salvar-usuario")
+async def salvar_usuario_admin(dados: UsuarioAdminData):
+    try:
+        agora = datetime.now(timezone.utc)
+        vencimento = agora + timedelta(days=dados.dias)
+        
+        payload = {
+            "email": dados.email.strip(),
+            "senha_hash": dados.senha.strip(),
+            "inicio_licenca": agora.isoformat(),
+            "vencimento_licenca": vencimento.isoformat()
+        }
+        
+        res = supabase.table("usuarios").upsert(payload, on_conflict="email").execute()
+        return {"sucesso": True, "data": res.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
